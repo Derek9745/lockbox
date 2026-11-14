@@ -80,6 +80,28 @@ pub struct EnvelopeHeader {
     recipients: Vec<WrappedKey>,
 }
 
+impl EnvelopeHeader {
+    /// Checks the parts of the header that can be checked without a key.
+    ///
+    /// Fails with `UnsupportedVersion` for an unknown version, and with
+    /// `MalformedEnvelope` if the recipient count is zero or above
+    /// `MAX_RECIPIENTS`.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != ENVELOPE_VERSION {
+            return Err(CryptoError::UnsupportedVersion(self.version));
+        }
+        if self.recipients.is_empty() || self.recipients.len() > MAX_RECIPIENTS {
+            return Err(CryptoError::MalformedEnvelope);
+        }
+        Ok(())
+    }
+
+    /// The recipients' public keys, in the order they were given.
+    pub fn recipients(&self) -> impl Iterator<Item = &VerifyingKey> {
+        self.recipients.iter().map(|wrapped| &wrapped.recipient)
+    }
+}
+
 /// A file encrypted for several recipients. It holds no secrets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Envelope {
@@ -124,6 +146,25 @@ impl Envelope {
             },
             ciphertext,
         })
+    }
+
+    /// Splits the envelope into its header and the encrypted file.
+    pub fn into_parts(self) -> (EnvelopeHeader, Vec<u8>) {
+        (self.header, self.ciphertext)
+    }
+
+    /// Joins a header and an encrypted file. This is the only way to build an
+    /// envelope from outside this module, so it makes the structural checks.
+    ///
+    /// Fails like `EnvelopeHeader::validate`, and with `MalformedEnvelope` if
+    /// the ciphertext is shorter than a tag. It cannot tell whether the two
+    /// belong together. A mismatch is caught when you decrypt.
+    pub fn from_parts(header: EnvelopeHeader, ciphertext: Vec<u8>) -> Result<Self> {
+        header.validate()?;
+        if ciphertext.len() < TAG_LEN {
+            return Err(CryptoError::MalformedEnvelope);
+        }
+        Ok(Self { header, ciphertext })
     }
 
     /// Decrypts with the secret key of one recipient.
@@ -177,29 +218,17 @@ impl Envelope {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let mut reader = Reader(bytes);
         let version = u16::from_be_bytes(reader.take()?);
-        if version != ENVELOPE_VERSION {
-            return Err(CryptoError::UnsupportedVersion(version));
-        }
         let nonce = reader.take()?;
         let count = usize::from(u16::from_be_bytes(reader.take()?));
-        if count == 0 || count > MAX_RECIPIENTS {
-            return Err(CryptoError::MalformedEnvelope);
-        }
         let recipients = (0..count)
             .map(|_| WrappedKey::read_from(&mut reader))
             .collect::<Result<Vec<_>>>()?;
-        let ciphertext = reader.rest();
-        if ciphertext.len() < TAG_LEN {
-            return Err(CryptoError::MalformedEnvelope);
-        }
-        Ok(Self {
-            header: EnvelopeHeader {
-                version,
-                nonce,
-                recipients,
-            },
-            ciphertext: ciphertext.to_vec(),
-        })
+        let header = EnvelopeHeader {
+            version,
+            nonce,
+            recipients,
+        };
+        Self::from_parts(header, reader.rest().to_vec())
     }
 
     /// The version as big endian bytes. It takes the version as an argument

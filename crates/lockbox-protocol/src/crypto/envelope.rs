@@ -42,6 +42,7 @@ use std::collections::HashSet;
 
 use curve25519_dalek::MontgomeryPoint;
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -63,14 +64,14 @@ type EphemeralPublic = [u8; KEY_LEN];
 /// `e * s * G`. Secret, wiped on drop.
 type SharedSecret = Zeroizing<[u8; KEY_LEN]>;
 
-/// The data key plus its 16-byte tag.
-type SealedKey = [u8; KEY_LEN + TAG_LEN];
+/// Size of a sealed key: the data key plus its 16-byte tag.
+const SEALED_LEN: usize = KEY_LEN + TAG_LEN;
 
 /// Bytes before the first entry: version, file nonce and recipient count.
 const HEADER_LEN: usize = 2 + NONCE_LEN + 2;
 
 /// Everything in an envelope except the encrypted file. It holds no secrets.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvelopeHeader {
     /// Format number, see `ENVELOPE_VERSION`.
     version: u16,
@@ -85,12 +86,19 @@ impl EnvelopeHeader {
     ///
     /// Fails with `UnsupportedVersion` for an unknown version, and with
     /// `MalformedEnvelope` if the recipient count is zero or above
-    /// `MAX_RECIPIENTS`.
+    /// `MAX_RECIPIENTS`, or if a sealed key has the wrong length.
     pub fn validate(&self) -> Result<()> {
         if self.version != ENVELOPE_VERSION {
             return Err(CryptoError::UnsupportedVersion(self.version));
         }
         if self.recipients.is_empty() || self.recipients.len() > MAX_RECIPIENTS {
+            return Err(CryptoError::MalformedEnvelope);
+        }
+        if self
+            .recipients
+            .iter()
+            .any(|wrapped| wrapped.sealed.len() != SEALED_LEN)
+        {
             return Err(CryptoError::MalformedEnvelope);
         }
         Ok(())
@@ -242,7 +250,7 @@ impl Envelope {
 ///
 /// `G` is the curve's base point, `s` the recipient's secret number and `e`
 /// the sender's throwaway secret.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct WrappedKey {
     /// `s * G`. Used to find your entry, and mixed into the hash and the AAD.
     recipient: VerifyingKey,
@@ -250,13 +258,15 @@ struct WrappedKey {
     ephemeral: EphemeralPublic,
     /// Nonce for locking the data key.
     nonce: Nonce,
-    /// The data key encrypted with the wrapping key.
-    sealed: SealedKey,
+    /// The data key encrypted with the wrapping key. Always `SEALED_LEN`
+    /// bytes. It is a `Vec` because serde cannot handle a 48 byte array, so
+    /// `validate` checks the length.
+    sealed: Vec<u8>,
 }
 
 impl WrappedKey {
     /// Size of one entry in bytes.
-    const LEN: usize = KEY_LEN + KEY_LEN + NONCE_LEN + KEY_LEN + TAG_LEN;
+    const LEN: usize = KEY_LEN + KEY_LEN + NONCE_LEN + SEALED_LEN;
 
     /// Appends the entry to `out`.
     fn write_to(&self, out: &mut Vec<u8>) {
@@ -275,7 +285,7 @@ impl WrappedKey {
             recipient,
             ephemeral: reader.take()?,
             nonce: reader.take()?,
-            sealed: reader.take()?,
+            sealed: reader.take::<SEALED_LEN>()?.to_vec(),
         })
     }
 
@@ -296,13 +306,12 @@ impl WrappedKey {
         }
         let wrapping_key = Self::wrapping_key(&shared_secret, &ephemeral, recipient);
         let aad = Self::aad(recipient, &ephemeral);
-        let (nonce, sealed_key) = wrapping_key.encrypt(data_key.as_ref(), &aad)?;
-        let sealed_key = SealedKey::try_from(sealed_key).map_err(|_| CryptoError::Encryption)?;
+        let (nonce, sealed) = wrapping_key.encrypt(data_key.as_ref(), &aad)?;
         Ok(Self {
             recipient: *recipient,
             ephemeral,
             nonce,
-            sealed: sealed_key,
+            sealed,
         })
     }
 

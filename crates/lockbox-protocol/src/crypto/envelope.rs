@@ -108,6 +108,68 @@ impl EnvelopeHeader {
     pub fn recipients(&self) -> impl Iterator<Item = &VerifyingKey> {
         self.recipients.iter().map(|wrapped| &wrapped.recipient)
     }
+
+    /// The part of the header that one recipient needs, or `None` if that key
+    /// has no entry.
+    pub fn for_recipient(&self, recipient: &VerifyingKey) -> Option<RecipientHeader> {
+        let entry = self
+            .recipients
+            .iter()
+            .find(|wrapped| wrapped.recipient == *recipient)?;
+        Some(RecipientHeader {
+            version: self.version,
+            nonce: self.nonce,
+            entry: entry.clone(),
+        })
+    }
+}
+
+/// What one recipient needs from the header: the version, the file nonce and
+/// their own entry. It holds no secrets and does not reveal who else was
+/// invited.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientHeader {
+    /// Format number, see `ENVELOPE_VERSION`.
+    version: u16,
+    /// Nonce for the file encryption.
+    nonce: Nonce,
+    /// The recipient's own entry.
+    entry: WrappedKey,
+}
+
+impl RecipientHeader {
+    /// Checks what can be checked without a key.
+    ///
+    /// Fails with `UnsupportedVersion` for an unknown version, and with
+    /// `MalformedEnvelope` if the sealed key has the wrong length.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != ENVELOPE_VERSION {
+            return Err(CryptoError::UnsupportedVersion(self.version));
+        }
+        if self.entry.sealed.len() != SEALED_LEN {
+            return Err(CryptoError::MalformedEnvelope);
+        }
+        Ok(())
+    }
+
+    /// The public key this header was made for.
+    pub fn recipient(&self) -> &VerifyingKey {
+        &self.entry.recipient
+    }
+
+    /// Decrypts `ciphertext` with the secret key this header was made for.
+    ///
+    /// Fails like `validate`, with `NotARecipient` if the key is not the one
+    /// in this header, and with `Decryption` if the key is wrong or anything
+    /// changed.
+    pub fn decrypt(&self, key: &SigningKey, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        self.validate()?;
+        if self.entry.recipient != key.verifying_key() {
+            return Err(CryptoError::NotARecipient);
+        }
+        let data_key = self.entry.open(key)?;
+        data_key.decrypt(&self.nonce, ciphertext, &Envelope::aad(self.version))
+    }
 }
 
 /// A file encrypted for several recipients. It holds no secrets.
@@ -180,19 +242,10 @@ impl Envelope {
     /// Fails with `NotARecipient` if the key has no entry, and with
     /// `Decryption` if the key is wrong or anything in the envelope changed.
     pub fn decrypt(&self, key: &SigningKey) -> Result<Vec<u8>> {
-        let own = key.verifying_key();
-        let wrapped_key = self
-            .header
-            .recipients
-            .iter()
-            .find(|&wrapped| wrapped.recipient == own)
-            .ok_or(CryptoError::NotARecipient)?;
-        let data_key = wrapped_key.open(key)?;
-        data_key.decrypt(
-            &self.header.nonce,
-            &self.ciphertext,
-            &Self::aad(ENVELOPE_VERSION),
-        )
+        self.header
+            .for_recipient(&key.verifying_key())
+            .ok_or(CryptoError::NotARecipient)?
+            .decrypt(key, &self.ciphertext)
     }
 
     /// The version as big endian bytes. It takes the version as an argument

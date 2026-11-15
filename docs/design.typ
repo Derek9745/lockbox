@@ -66,13 +66,13 @@ This is the shared library, and both programs depend on it so they cannot disagr
 - the splitting of an encrypted file into pieces and putting it back together, with the safety checks on sizes
 - the limits listed in the table below
 
-It does not open sockets, and the only files it touches are key files. For messages it reads and writes whatever stream it is handed. It is already built and tested, and it uses the dalek crates (ed25519-dalek and curve25519-dalek) for keys and signatures, chacha20poly1305 and sha2 for encryption, zeroize to wipe secrets from memory, serde with postcard for messages, base64 and rand, and thiserror for errors.
+It does not open sockets, and the only files it touches are key files. For messages it reads and writes whatever stream it is handed, using the standard blocking read and write calls. It is already built and tested, and it uses the dalek crates (ed25519-dalek and curve25519-dalek) for keys and signatures, chacha20poly1305 and sha2 for encryption, zeroize to wipe secrets from memory, serde with postcard for messages, base64 and rand, and thiserror for errors.
 
 == lockbox-server
 
 The server is a long-running program. It does the following:
 
-- listens on one address and serves each connection on its own thread
+- listens on one address and serves many connections at the same time
 - reads requests one at a time and answers each one, and closes the connection if the peer sends something unexpected or goes quiet for too long
 - creates challenges and keeps each one only on the connection it was issued to, until it is answered or expires
 - checks signatures and then checks permission: a recipient for a fetch, the owner for a delete
@@ -87,11 +87,13 @@ The libraries it should use:
 - `lockbox-protocol` for everything on the wire and every cryptographic check
 - `clap` to read the command line options, such as the address to listen on and the storage folder
 - `tracing` and `tracing-subscriber` for logs
-- `ctrlc`, so that Ctrl+C lets the server stop and delete its files instead of leaving them behind
+- `ctrlc`, or the runtime's own signal handling, so that Ctrl+C lets the server stop and delete its files instead of leaving them behind
 - `thiserror` for the server's own error type
-- the standard library for sockets, threads and locks
+- an async runtime, either `tokio` or `mio`, chosen by whoever builds the server (see below)
 
-We do not use an async runtime. The server has few connections and each one does one thing at a time, so threads and blocking reads are simpler to follow and to test.
+The server needs an async runtime, and whoever builds it has to choose between `tokio` and `mio`. `tokio` is a complete runtime. It comes with async sockets, timers and task scheduling, so the server code stays short. `mio` is a thin layer over the operating system's event notifications. It gives non-blocking sockets and an event loop and nothing else, so the server would supply its own scheduling, timers and buffering. The choice should be made before the server is written and recorded here once it is made.
+
+The choice reaches into the protocol crate. Its functions for reading and writing messages and file pieces use the blocking standard `Read` and `Write` traits. Those work on plain threads, but not on async streams or non-blocking sockets. With either runtime, the implementor also has to decide how the protocol crate meets it. One way is to add async versions of those functions, which suits `tokio`. The other is to change them so the crate only turns bytes into messages and back, while the server does the socket reads and writes itself, which suits `mio`. The client can stay on the standard library's blocking sockets either way.
 
 == lockbox-client
 

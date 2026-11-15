@@ -35,6 +35,18 @@ pub enum ProtocolError {
 
     #[error("the challenge has expired")]
     ChallengeExpired,
+
+    #[error("a message arrived that the transfer did not expect")]
+    UnexpectedMessage,
+
+    #[error("the other side reported an error: {0}")]
+    Remote(crate::message::ErrorCode),
+
+    #[error("a chunk was empty")]
+    EmptyChunk,
+
+    #[error("more data arrived than the header announced")]
+    TransferOverflow,
 }
 
 pub type Result<T> = std::result::Result<T, ProtocolError>;

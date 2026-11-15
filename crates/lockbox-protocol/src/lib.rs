@@ -5,6 +5,7 @@ pub mod crypto;
 pub mod error;
 pub mod file_id;
 pub mod message;
+pub mod transfer;
 
 pub use challenge::{Challenge, Purpose};
 pub use chunk::Chunk;

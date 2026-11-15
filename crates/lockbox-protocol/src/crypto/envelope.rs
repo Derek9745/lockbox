@@ -1,7 +1,7 @@
 //! Encrypts one file for several recipients.
 //!
 //! The file is encrypted once with a random data key. That key is then locked
-//! separately for each recipient. Adding a recipient adds about 136 bytes.
+//! separately for each recipient. Adding a recipient adds about 140 bytes.
 //!
 //! To lock the data key for one recipient:
 //!
@@ -48,7 +48,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::crypto::{
     CryptoError, Result, domain,
-    symmetric::{KEY_LEN, NONCE_LEN, Nonce, SymmetricKey, TAG_LEN},
+    symmetric::{KEY_LEN, Nonce, SymmetricKey, TAG_LEN},
 };
 
 /// Format number. Stored in every envelope and used as AAD for the file, so
@@ -69,9 +69,6 @@ type SharedSecret = Zeroizing<[u8; KEY_LEN]>;
 
 /// Size of a sealed key: the data key plus its 16-byte tag.
 const SEALED_LEN: usize = KEY_LEN + TAG_LEN;
-
-/// Bytes before the first entry: version, file nonce and recipient count.
-const HEADER_LEN: usize = 2 + NONCE_LEN + 2;
 
 /// Everything in an envelope except the encrypted file. It holds no secrets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,50 +195,6 @@ impl Envelope {
         )
     }
 
-    /// The envelope as bytes, ready to store or send. All numbers are big
-    /// endian.
-    ///
-    /// ```text
-    /// version (2) | file nonce (24) | recipient count (2) | entries | ciphertext
-    /// entry = recipient key (32) | ephemeral point (32) | nonce (24) | sealed key (48)
-    /// ```
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(
-            HEADER_LEN + self.header.recipients.len() * WrappedKey::LEN + self.ciphertext.len(),
-        );
-        bytes.extend_from_slice(&self.header.version.to_be_bytes());
-        bytes.extend_from_slice(&self.header.nonce);
-        bytes.extend_from_slice(&(self.header.recipients.len() as u16).to_be_bytes());
-        for wrapped in &self.header.recipients {
-            wrapped.write_to(&mut bytes);
-        }
-        bytes.extend_from_slice(&self.ciphertext);
-        bytes
-    }
-
-    /// Reads an envelope from bytes made by `to_bytes`.
-    ///
-    /// Fails with `UnsupportedVersion` for an unknown version, and with
-    /// `MalformedEnvelope` if the bytes are too short, the recipient count is
-    /// zero or above `MAX_RECIPIENTS`, a recipient key is invalid, or the
-    /// ciphertext is shorter than a tag. It checks the structure only. A
-    /// changed byte is caught when you decrypt.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let mut reader = Reader(bytes);
-        let version = u16::from_be_bytes(reader.take()?);
-        let nonce = reader.take()?;
-        let count = usize::from(u16::from_be_bytes(reader.take()?));
-        let recipients = (0..count)
-            .map(|_| WrappedKey::read_from(&mut reader))
-            .collect::<Result<Vec<_>>>()?;
-        let header = EnvelopeHeader {
-            version,
-            nonce,
-            recipients,
-        };
-        Self::from_parts(header, reader.rest().to_vec())
-    }
-
     /// The version as big endian bytes. It takes the version as an argument
     /// because no envelope exists yet when the file is encrypted.
     fn aad(version: u16) -> [u8; 2] {
@@ -268,30 +221,6 @@ struct WrappedKey {
 }
 
 impl WrappedKey {
-    /// Size of one entry in bytes.
-    const LEN: usize = KEY_LEN + KEY_LEN + NONCE_LEN + SEALED_LEN;
-
-    /// Appends the entry to `out`.
-    fn write_to(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(self.recipient.as_bytes());
-        out.extend_from_slice(&self.ephemeral);
-        out.extend_from_slice(&self.nonce);
-        out.extend_from_slice(&self.sealed);
-    }
-
-    /// Reads one entry. Fails if the bytes run out or the recipient key is
-    /// not a valid key.
-    fn read_from(reader: &mut Reader) -> Result<Self> {
-        let recipient = VerifyingKey::from_bytes(&reader.take()?)
-            .map_err(|_| CryptoError::MalformedEnvelope)?;
-        Ok(Self {
-            recipient,
-            ephemeral: reader.take()?,
-            nonce: reader.take()?,
-            sealed: reader.take::<SEALED_LEN>()?.to_vec(),
-        })
-    }
-
     /// Locks `data_key` for `recipient`. The ephemeral secret, the shared
     /// secret and the wrapping key are wiped before this returns.
     fn seal(data_key: &SymmetricKey, recipient: &VerifyingKey) -> Result<Self> {
@@ -367,25 +296,5 @@ impl WrappedKey {
         aad[..KEY_LEN].copy_from_slice(recipient.as_bytes());
         aad[KEY_LEN..].copy_from_slice(ephemeral);
         aad
-    }
-}
-
-/// Reads fixed-size fields from the front of a byte slice.
-struct Reader<'a>(&'a [u8]);
-
-impl<'a> Reader<'a> {
-    /// Takes the next `N` bytes, or fails if fewer are left.
-    fn take<const N: usize>(&mut self) -> Result<[u8; N]> {
-        let (head, rest) = self
-            .0
-            .split_first_chunk::<N>()
-            .ok_or(CryptoError::MalformedEnvelope)?;
-        self.0 = rest;
-        Ok(*head)
-    }
-
-    /// Everything not read yet.
-    fn rest(self) -> &'a [u8] {
-        self.0
     }
 }

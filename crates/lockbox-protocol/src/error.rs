@@ -16,6 +16,9 @@ pub enum ProtocolError {
 
     #[error("connection closed")]
     ConnectionClosed,
+
+    #[error("invalid file id")]
+    InvalidFileId,
 }
 
 pub type Result<T> = std::result::Result<T, ProtocolError>;

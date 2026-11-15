@@ -1,10 +1,10 @@
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 use crate::error::{ProtocolError, Result};
 
 pub const CHUNK_LEN: usize = 256 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "Vec<u8>")]
 pub struct Chunk(Vec<u8>);
 
@@ -33,11 +33,5 @@ impl TryFrom<Vec<u8>> for Chunk {
             });
         }
         Ok(Self(bytes))
-    }
-}
-
-impl Serialize for Chunk {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        self.0.serialize(serializer)
     }
 }

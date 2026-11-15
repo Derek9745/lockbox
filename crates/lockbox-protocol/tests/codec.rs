@@ -1,16 +1,35 @@
 use std::io::{self, Cursor, Read};
 
-use bincode::error::DecodeError;
 use lockbox_protocol::ProtocolError;
 use lockbox_protocol::codec::{MAX_MESSAGE_LEN, read_message, write_message};
+use lockbox_protocol::crypto::keys::generate_keypair;
+use lockbox_protocol::crypto::sign::sign;
+use lockbox_protocol::crypto::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 enum Message {
     Ping,
     Number(u32),
-    Chunk { data: Vec<u8> },
+    Chunk {
+        data: Vec<u8>,
+    },
     Name(String),
+    Signed {
+        key: VerifyingKey,
+        nonce: [u8; 32],
+        signature: Signature,
+    },
+}
+
+fn signed_message() -> Message {
+    let key = generate_keypair();
+    Message::Signed {
+        key: key.verifying_key(),
+        nonce: [0x5A; 32],
+        signature: sign(b"proof", &key),
+    }
 }
 
 fn encode(message: &Message) -> Vec<u8> {
@@ -48,6 +67,7 @@ fn every_kind_of_message_round_trips() {
             data: (0..=255).collect(),
         },
         Message::Name("lockbox".to_string()),
+        signed_message(),
     ];
     for message in messages {
         assert_eq!(decode(&encode(&message)).unwrap(), message);
@@ -55,16 +75,12 @@ fn every_kind_of_message_round_trips() {
 }
 
 #[test]
-fn the_wire_layout_is_big_endian_with_fixed_width_numbers() {
-    assert_eq!(encode(&Message::Ping), [0, 0, 0, 0]);
-    assert_eq!(
-        encode(&Message::Number(0x0102_0304)),
-        [0, 0, 0, 1, 1, 2, 3, 4]
-    );
-    assert_eq!(
-        encode(&Message::Chunk { data: vec![9, 8] }),
-        [0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 9, 8]
-    );
+fn the_wire_layout_is_a_kind_byte_then_the_fields() {
+    assert_eq!(encode(&Message::Ping), [0]);
+    assert_eq!(encode(&Message::Number(5)), [1, 5]);
+    assert_eq!(encode(&Message::Number(300)), [1, 0xAC, 0x02]);
+    assert_eq!(encode(&Message::Chunk { data: vec![9, 8] }), [2, 2, 9, 8]);
+    assert_eq!(encode(&Message::Name("hi".to_string())), [3, 2, b'h', b'i']);
 }
 
 #[test]
@@ -112,17 +128,15 @@ fn a_stream_cut_inside_a_message_means_the_connection_closed() {
 
 #[test]
 fn an_unknown_message_kind_is_a_decode_error() {
-    assert!(matches!(
-        decode(&[0, 0, 0, 99]),
-        Err(ProtocolError::Decode(_))
-    ));
+    assert!(matches!(decode(&[99]), Err(ProtocolError::Decode(_))));
 }
 
 #[test]
 fn invalid_text_is_a_decode_error() {
-    let mut bytes = vec![0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 2];
-    bytes.extend([0xFF, 0xFE]);
-    assert!(matches!(decode(&bytes), Err(ProtocolError::Decode(_))));
+    assert!(matches!(
+        decode(&[3, 2, 0xFF, 0xFE]),
+        Err(ProtocolError::Decode(_))
+    ));
 }
 
 #[test]
@@ -145,23 +159,18 @@ fn a_message_over_the_limit_is_rejected_when_reading() {
     let message = Message::Chunk {
         data: vec![0; 2 * MAX_MESSAGE_LEN],
     };
-    let bytes = bincode::serde::encode_to_vec(
-        &message,
-        bincode::config::standard()
-            .with_big_endian()
-            .with_fixed_int_encoding(),
-    )
-    .unwrap();
+    let bytes = postcard::to_stdvec(&message).unwrap();
     assert!(matches!(
         decode(&bytes),
-        Err(ProtocolError::Decode(DecodeError::LimitExceeded))
+        Err(ProtocolError::MessageLimitExceeded { max }) if max == MAX_MESSAGE_LEN
     ));
 }
 
 #[test]
 fn a_huge_claimed_length_does_not_allocate_it() {
-    let mut bytes = vec![0, 0, 0, 2];
-    bytes.extend(u64::MAX.to_be_bytes());
+    let mut bytes = vec![2];
+    bytes.extend([0xFF; 9]);
+    bytes.push(0x01);
     assert!(matches!(
         decode(&bytes),
         Err(ProtocolError::ConnectionClosed)
@@ -193,4 +202,23 @@ fn a_failing_writer_reports_an_io_error() {
         write_message(&mut Broken, &Message::Ping),
         Err(ProtocolError::Io(_))
     ));
+}
+
+#[test]
+fn keys_and_signatures_fit_the_read_buffer() {
+    for _ in 0..20 {
+        let message = signed_message();
+        assert_eq!(decode(&encode(&message)).unwrap(), message);
+    }
+}
+
+#[test]
+fn a_message_just_under_the_limit_is_accepted() {
+    let overhead = encode(&Message::Chunk { data: vec![] }).len() + 3;
+    let message = Message::Chunk {
+        data: vec![1; MAX_MESSAGE_LEN - overhead],
+    };
+    let bytes = encode(&message);
+    assert!(bytes.len() <= MAX_MESSAGE_LEN);
+    assert_eq!(decode(&bytes).unwrap(), message);
 }

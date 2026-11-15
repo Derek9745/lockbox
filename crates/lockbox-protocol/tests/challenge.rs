@@ -7,10 +7,10 @@ use lockbox_protocol::crypto::keys::generate_keypair;
 use lockbox_protocol::crypto::sign::{sign, verify};
 use lockbox_protocol::{Challenge, FileId, ProtocolError, Purpose};
 
-const WIRE_LEN: usize = 16 + 4 + CHALLENGE_NONCE_LEN + 8;
+const WIRE_LEN: usize = 16 + 1 + CHALLENGE_NONCE_LEN + 1;
 const PURPOSE_AT: usize = 16;
-const NONCE_AT: usize = 20;
-const ISSUED_AT_AT: usize = 52;
+const NONCE_AT: usize = 17;
+const ISSUED_AT_AT: usize = 49;
 
 fn encode(challenge: &Challenge) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -81,17 +81,22 @@ fn the_signing_bytes_have_a_fixed_layout() {
 }
 
 #[test]
-fn on_the_wire_a_challenge_is_a_fixed_size() {
-    let challenge = Challenge::new(FileId::random(), Purpose::Fetch, 5);
+fn on_the_wire_a_challenge_has_a_known_layout() {
+    let id = FileId::random();
+    let challenge = Challenge::new(id, Purpose::Delete, 5);
     let bytes = encode(&challenge);
     assert_eq!(bytes.len(), WIRE_LEN);
+    assert_eq!(&bytes[..PURPOSE_AT], id.as_bytes());
+    assert_eq!(bytes[PURPOSE_AT], 1);
+    assert_eq!(&bytes[NONCE_AT..ISSUED_AT_AT], challenge.nonce());
+    assert_eq!(bytes[ISSUED_AT_AT], 5);
     assert_eq!(decode(&bytes).unwrap(), challenge);
 }
 
 #[test]
 fn an_unknown_purpose_is_rejected() {
     let mut bytes = encode(&Challenge::new(FileId::random(), Purpose::Fetch, 5));
-    bytes[PURPOSE_AT..NONCE_AT].copy_from_slice(&3u32.to_be_bytes());
+    bytes[PURPOSE_AT] = 3;
     assert!(matches!(decode(&bytes), Err(ProtocolError::Decode(_))));
 }
 
@@ -113,7 +118,7 @@ fn a_signature_for_one_purpose_does_not_verify_as_another() {
         let wire = encode(&challenge);
         for (other_index, _) in purposes.into_iter().enumerate() {
             let mut bytes = wire.clone();
-            bytes[PURPOSE_AT..NONCE_AT].copy_from_slice(&(other_index as u32).to_be_bytes());
+            bytes[PURPOSE_AT] = other_index as u8;
             let other = decode(&bytes).unwrap();
             let verified = verify(&other.signing_bytes(), &signature, &key.verifying_key()).is_ok();
             assert_eq!(verified, other_index == signed_index);
@@ -149,7 +154,7 @@ fn changing_any_field_breaks_the_signature() {
         tampered.push(bytes);
     }
     let mut delete_instead = wire.clone();
-    delete_instead[PURPOSE_AT..NONCE_AT].copy_from_slice(&1u32.to_be_bytes());
+    delete_instead[PURPOSE_AT] = 1;
     tampered.push(delete_instead);
 
     for bytes in tampered {

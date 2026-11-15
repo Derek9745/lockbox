@@ -9,8 +9,8 @@ use lockbox_protocol::crypto::sign::sign;
 use lockbox_protocol::crypto::{CryptoError, SigningKey, VerifyingKey};
 use lockbox_protocol::message::{MAX_CIPHERTEXT_LEN, MAX_LIFETIME_SECS};
 use lockbox_protocol::{
-    Challenge, Chunk, ErrorCode, FileHeader, FileId, ProtocolError, Purpose, Request, Response,
-    SignedRequest,
+    Challenge, Chunk, ErrorCode, FetchHeader, FileHeader, FileId, ProtocolError, Purpose, Request,
+    Response, SignedRequest,
 };
 
 fn encode<T: serde::Serialize>(message: &T) -> Vec<u8> {
@@ -39,6 +39,27 @@ fn file_header(recipients: usize) -> FileHeader {
         ciphertext_len: 4096,
         expires_at: 1_700_000_300,
     }
+}
+
+fn stored_header(recipients: usize) -> (FileHeader, Vec<VerifyingKey>) {
+    let keys: Vec<VerifyingKey> = (0..recipients)
+        .map(|_| generate_keypair().verifying_key())
+        .collect();
+    let envelope = Envelope::encrypt_to_recipients(b"x", &keys)
+        .unwrap()
+        .into_parts()
+        .0;
+    let header = FileHeader {
+        envelope,
+        ciphertext_len: 4096,
+        expires_at: 1_700_000_300,
+    };
+    (header, keys)
+}
+
+fn fetch_header() -> FetchHeader {
+    let (header, keys) = stored_header(3);
+    header.fetch_header_for(&keys[1]).unwrap()
 }
 
 fn signed_request(key: &SigningKey) -> SignedRequest {
@@ -79,7 +100,7 @@ fn all_responses() -> Vec<Response> {
             file_id: FileId::random(),
             expires_at: 1_700_000_300,
         },
-        Response::FetchReady(file_header(2)),
+        Response::FetchReady(Box::new(fetch_header())),
         Response::Chunk(Chunk::new(vec![9; 100]).unwrap()),
         Response::Deleted,
         Response::Error(ErrorCode::Denied),
@@ -177,10 +198,12 @@ fn the_largest_upload_request_fits_in_a_message() {
 }
 
 #[test]
-fn the_largest_fetch_response_fits_in_a_message() {
-    let response = Response::FetchReady(file_header(MAX_RECIPIENTS));
+fn a_fetch_response_is_small_however_many_recipients_the_file_has() {
+    let (header, keys) = stored_header(MAX_RECIPIENTS);
+    let fetch = header.fetch_header_for(&keys[MAX_RECIPIENTS - 1]).unwrap();
+    let response = Response::FetchReady(Box::new(fetch));
     let bytes = encode(&response);
-    assert!(bytes.len() < MAX_MESSAGE_LEN / 10, "{} bytes", bytes.len());
+    assert!(bytes.len() < 400, "{} bytes", bytes.len());
     assert_eq!(decode::<Response>(&bytes).unwrap(), response);
 }
 
@@ -315,4 +338,64 @@ fn a_sealed_key_of_the_wrong_length_is_rejected() {
             Err(ProtocolError::Crypto(CryptoError::MalformedEnvelope))
         ));
     }
+}
+
+#[test]
+fn a_fetch_header_is_made_for_the_requesting_key_only() {
+    let (header, keys) = stored_header(4);
+    for key in &keys {
+        let fetch = header.fetch_header_for(key).unwrap();
+        assert_eq!(fetch.recipient.recipient(), key);
+        assert_eq!(fetch.ciphertext_len, header.ciphertext_len);
+        assert_eq!(fetch.expires_at, header.expires_at);
+        assert!(fetch.validate().is_ok());
+    }
+}
+
+#[test]
+fn a_key_that_is_not_a_recipient_gets_no_fetch_header() {
+    let (header, _) = stored_header(2);
+    assert!(
+        header
+            .fetch_header_for(&generate_keypair().verifying_key())
+            .is_none()
+    );
+}
+
+#[test]
+fn a_fetch_header_does_not_contain_the_other_recipients_keys() {
+    let (header, keys) = stored_header(6);
+    let bytes = encode(&header.fetch_header_for(&keys[2]).unwrap());
+    for (index, key) in keys.iter().enumerate() {
+        let present = bytes
+            .windows(32)
+            .any(|window| window == key.as_bytes().as_slice());
+        assert_eq!(present, index == 2, "key {index}");
+    }
+}
+
+#[test]
+fn the_ciphertext_length_of_a_fetch_header_must_be_within_bounds() {
+    let mut header = fetch_header();
+    for (len, ok) in [
+        (0, false),
+        (15, false),
+        (16, true),
+        (MAX_CIPHERTEXT_LEN, true),
+        (MAX_CIPHERTEXT_LEN + 1, false),
+    ] {
+        header.ciphertext_len = len;
+        assert_eq!(header.validate().is_ok(), ok, "length {len}");
+    }
+}
+
+#[test]
+fn a_fetch_header_with_an_unknown_version_is_rejected() {
+    let mut bytes = encode(&fetch_header());
+    bytes[0] = 9;
+    let tampered: FetchHeader = decode(&bytes).unwrap();
+    assert!(matches!(
+        tampered.validate(),
+        Err(ProtocolError::Crypto(CryptoError::UnsupportedVersion(9)))
+    ));
 }

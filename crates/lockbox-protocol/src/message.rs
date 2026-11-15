@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::challenge::{CHALLENGE_NONCE_LEN, Challenge, Purpose};
 use crate::chunk::Chunk;
-use crate::crypto::envelope::{EnvelopeHeader, MIN_CIPHERTEXT_LEN};
+use crate::crypto::envelope::{EnvelopeHeader, MIN_CIPHERTEXT_LEN, RecipientHeader};
 use crate::crypto::sign::{sign, verify};
 use crate::crypto::{Signature, SigningKey, VerifyingKey};
 use crate::error::{ProtocolError, Result};
@@ -18,18 +18,44 @@ pub struct FileHeader {
     pub expires_at: u64,
 }
 
+fn check_ciphertext_len(len: u64) -> Result<()> {
+    let min = MIN_CIPHERTEXT_LEN as u64;
+    if len < min || len > MAX_CIPHERTEXT_LEN {
+        return Err(ProtocolError::CiphertextLenOutOfRange {
+            len,
+            min,
+            max: MAX_CIPHERTEXT_LEN,
+        });
+    }
+    Ok(())
+}
+
 impl FileHeader {
     pub fn validate(&self) -> Result<()> {
         self.envelope.validate()?;
-        let min = MIN_CIPHERTEXT_LEN as u64;
-        if self.ciphertext_len < min || self.ciphertext_len > MAX_CIPHERTEXT_LEN {
-            return Err(ProtocolError::CiphertextLenOutOfRange {
-                len: self.ciphertext_len,
-                min,
-                max: MAX_CIPHERTEXT_LEN,
-            });
-        }
-        Ok(())
+        check_ciphertext_len(self.ciphertext_len)
+    }
+
+    pub fn fetch_header_for(&self, recipient: &VerifyingKey) -> Option<FetchHeader> {
+        Some(FetchHeader {
+            recipient: self.envelope.for_recipient(recipient)?,
+            ciphertext_len: self.ciphertext_len,
+            expires_at: self.expires_at,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FetchHeader {
+    pub recipient: RecipientHeader,
+    pub ciphertext_len: u64,
+    pub expires_at: u64,
+}
+
+impl FetchHeader {
+    pub fn validate(&self) -> Result<()> {
+        self.recipient.validate()?;
+        check_ciphertext_len(self.ciphertext_len)
     }
 }
 
@@ -111,7 +137,7 @@ pub enum Response {
     Challenge(Challenge),
     ReadyForUpload,
     Uploaded { file_id: FileId, expires_at: u64 },
-    FetchReady(FileHeader),
+    FetchReady(Box<FetchHeader>),
     Chunk(Chunk),
     Deleted,
     Error(ErrorCode),

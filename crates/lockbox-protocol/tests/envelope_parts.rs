@@ -1,4 +1,4 @@
-use lockbox_protocol::crypto::envelope::Envelope;
+use lockbox_protocol::crypto::envelope::{Envelope, MIN_CIPHERTEXT_LEN};
 use lockbox_protocol::crypto::keys::generate_keypair;
 use lockbox_protocol::crypto::{CryptoError, SigningKey, VerifyingKey};
 
@@ -106,4 +106,13 @@ fn a_changed_ciphertext_byte_is_caught_on_decrypt() {
     ciphertext[0] ^= 0x01;
     let tampered = Envelope::from_parts(header, ciphertext).unwrap();
     assert!(tampered.decrypt(&secrets[0]).is_err());
+}
+
+#[test]
+fn the_smallest_valid_ciphertext_is_an_encrypted_empty_message() {
+    let (_, publics) = recipients(1);
+    let (_, ciphertext) = Envelope::encrypt_to_recipients(b"", &publics)
+        .unwrap()
+        .into_parts();
+    assert_eq!(ciphertext.len(), MIN_CIPHERTEXT_LEN);
 }

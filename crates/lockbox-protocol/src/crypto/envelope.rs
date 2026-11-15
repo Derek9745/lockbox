@@ -58,6 +58,9 @@ pub const ENVELOPE_VERSION: u16 = 1;
 /// The most distinct recipients one envelope can have.
 pub const MAX_RECIPIENTS: usize = 64;
 
+/// The shortest valid ciphertext: the tag of an encrypted empty message.
+pub const MIN_CIPHERTEXT_LEN: usize = TAG_LEN;
+
 /// `e * G`. Public.
 type EphemeralPublic = [u8; KEY_LEN];
 
@@ -169,7 +172,7 @@ impl Envelope {
     /// belong together. A mismatch is caught when you decrypt.
     pub fn from_parts(header: EnvelopeHeader, ciphertext: Vec<u8>) -> Result<Self> {
         header.validate()?;
-        if ciphertext.len() < TAG_LEN {
+        if ciphertext.len() < MIN_CIPHERTEXT_LEN {
             return Err(CryptoError::MalformedEnvelope);
         }
         Ok(Self { header, ciphertext })

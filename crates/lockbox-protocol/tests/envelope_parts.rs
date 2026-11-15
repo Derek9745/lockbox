@@ -10,6 +10,14 @@ fn recipients(count: usize) -> (Vec<SigningKey>, Vec<VerifyingKey>) {
     (secrets, publics)
 }
 
+fn open(envelope: &Envelope, key: &SigningKey) -> Result<Vec<u8>, CryptoError> {
+    let (header, ciphertext) = envelope.clone().into_parts();
+    header
+        .for_recipient(&key.verifying_key())
+        .ok_or(CryptoError::NotARecipient)?
+        .decrypt(key, &ciphertext)
+}
+
 #[test]
 fn an_envelope_round_trips_through_its_parts() {
     let (secrets, publics) = recipients(3);
@@ -18,7 +26,7 @@ fn an_envelope_round_trips_through_its_parts() {
     let rebuilt = Envelope::from_parts(header, ciphertext).unwrap();
     assert_eq!(rebuilt, envelope);
     for secret in &secrets {
-        assert_eq!(rebuilt.decrypt(secret).unwrap(), b"in pieces");
+        assert_eq!(open(&rebuilt, secret).unwrap(), b"in pieces");
     }
 }
 
@@ -94,7 +102,7 @@ fn a_header_joined_to_another_files_ciphertext_does_not_decrypt() {
         .unwrap()
         .into_parts();
     let mixed = Envelope::from_parts(header, other_ciphertext).unwrap();
-    assert!(mixed.decrypt(&secrets[0]).is_err());
+    assert!(open(&mixed, &secrets[0]).is_err());
 }
 
 #[test]
@@ -105,7 +113,7 @@ fn a_changed_ciphertext_byte_is_caught_on_decrypt() {
         .into_parts();
     ciphertext[0] ^= 0x01;
     let tampered = Envelope::from_parts(header, ciphertext).unwrap();
-    assert!(tampered.decrypt(&secrets[0]).is_err());
+    assert!(open(&tampered, &secrets[0]).is_err());
 }
 
 #[test]
@@ -248,20 +256,6 @@ fn a_sealed_key_of_the_wrong_length_in_a_recipient_header_is_rejected() {
             decoded(&bytes).validate(),
             Err(CryptoError::MalformedEnvelope)
         ));
-    }
-}
-
-#[test]
-fn decrypting_from_a_recipient_header_gives_the_same_result_as_the_envelope() {
-    let (secrets, publics) = recipients(3);
-    let envelope = Envelope::encrypt_to_recipients(b"same either way", &publics).unwrap();
-    let (header, ciphertext) = envelope.clone().into_parts();
-    for secret in &secrets {
-        let own = header.for_recipient(&secret.verifying_key()).unwrap();
-        assert_eq!(
-            own.decrypt(secret, &ciphertext).unwrap(),
-            envelope.decrypt(secret).unwrap()
-        );
     }
 }
 

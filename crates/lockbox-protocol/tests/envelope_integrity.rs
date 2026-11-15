@@ -23,9 +23,12 @@ fn split(message: &[u8], publics: &[VerifyingKey]) -> (Vec<u8>, Vec<u8>) {
 
 fn open(header: &[u8], ciphertext: &[u8], key: &SigningKey) -> Option<Vec<u8>> {
     let header: EnvelopeHeader = postcard::from_bytes(header).ok()?;
-    Envelope::from_parts(header, ciphertext.to_vec())
+    let (header, ciphertext) = Envelope::from_parts(header, ciphertext.to_vec())
         .ok()?
-        .decrypt(key)
+        .into_parts();
+    header
+        .for_recipient(&key.verifying_key())?
+        .decrypt(key, &ciphertext)
         .ok()
 }
 

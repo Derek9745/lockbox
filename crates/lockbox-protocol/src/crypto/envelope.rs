@@ -32,8 +32,11 @@
 //!     &[alice.verifying_key(), bob.verifying_key()],
 //! )?;
 //!
-//! assert_eq!(envelope.decrypt(&alice)?, b"meet at noon");
-//! assert_eq!(envelope.decrypt(&bob)?, b"meet at noon");
+//! let (header, ciphertext) = envelope.into_parts();
+//! for key in [&alice, &bob] {
+//!     let own = header.for_recipient(&key.verifying_key()).unwrap();
+//!     assert_eq!(own.decrypt(key, &ciphertext)?, b"meet at noon");
+//! }
 //! # Ok(())
 //! # }
 //! ```
@@ -235,17 +238,6 @@ impl Envelope {
             return Err(CryptoError::MalformedEnvelope);
         }
         Ok(Self { header, ciphertext })
-    }
-
-    /// Decrypts with the secret key of one recipient.
-    ///
-    /// Fails with `NotARecipient` if the key has no entry, and with
-    /// `Decryption` if the key is wrong or anything in the envelope changed.
-    pub fn decrypt(&self, key: &SigningKey) -> Result<Vec<u8>> {
-        self.header
-            .for_recipient(&key.verifying_key())
-            .ok_or(CryptoError::NotARecipient)?
-            .decrypt(key, &self.ciphertext)
     }
 
     /// The version as big endian bytes. It takes the version as an argument

@@ -8,11 +8,19 @@ fn recipients(count: usize) -> (Vec<SigningKey>, Vec<VerifyingKey>) {
     (secrets, publics)
 }
 
+fn open(envelope: &Envelope, key: &SigningKey) -> Result<Vec<u8>, CryptoError> {
+    let (header, ciphertext) = envelope.clone().into_parts();
+    header
+        .for_recipient(&key.verifying_key())
+        .ok_or(CryptoError::NotARecipient)?
+        .decrypt(key, &ciphertext)
+}
+
 #[test]
 fn a_single_recipient_can_decrypt() {
     let (secrets, publics) = recipients(1);
     let envelope = Envelope::encrypt_to_recipients(b"attack at dawn", &publics).unwrap();
-    assert_eq!(envelope.decrypt(&secrets[0]).unwrap(), b"attack at dawn");
+    assert_eq!(open(&envelope, &secrets[0]).unwrap(), b"attack at dawn");
 }
 
 #[test]
@@ -20,7 +28,7 @@ fn every_recipient_can_decrypt_the_same_envelope() {
     let (secrets, publics) = recipients(5);
     let envelope = Envelope::encrypt_to_recipients(b"shared secret", &publics).unwrap();
     for secret in &secrets {
-        assert_eq!(envelope.decrypt(secret).unwrap(), b"shared secret");
+        assert_eq!(open(&envelope, secret).unwrap(), b"shared secret");
     }
 }
 
@@ -30,7 +38,7 @@ fn a_key_that_is_not_a_recipient_cannot_decrypt() {
     let outsider = generate_keypair();
     let envelope = Envelope::encrypt_to_recipients(b"private", &publics).unwrap();
     assert!(matches!(
-        envelope.decrypt(&outsider),
+        open(&envelope, &outsider),
         Err(CryptoError::NotARecipient)
     ));
 }
@@ -40,11 +48,11 @@ fn empty_and_large_payloads_round_trip() {
     let (secrets, publics) = recipients(2);
 
     let empty = Envelope::encrypt_to_recipients(b"", &publics).unwrap();
-    assert_eq!(empty.decrypt(&secrets[1]).unwrap(), b"");
+    assert_eq!(open(&empty, &secrets[1]).unwrap(), b"");
 
     let large = vec![0xA5u8; 3 * 1024 * 1024 + 7];
     let envelope = Envelope::encrypt_to_recipients(&large, &publics).unwrap();
-    assert_eq!(envelope.decrypt(&secrets[0]).unwrap(), large);
+    assert_eq!(open(&envelope, &secrets[0]).unwrap(), large);
 }
 
 #[test]
@@ -61,8 +69,8 @@ fn encrypting_twice_gives_different_envelopes() {
     let first = Envelope::encrypt_to_recipients(b"same", &publics).unwrap();
     let second = Envelope::encrypt_to_recipients(b"same", &publics).unwrap();
     assert_ne!(first, second);
-    assert_eq!(first.decrypt(&secrets[0]).unwrap(), b"same");
-    assert_eq!(second.decrypt(&secrets[0]).unwrap(), b"same");
+    assert_eq!(open(&first, &secrets[0]).unwrap(), b"same");
+    assert_eq!(open(&second, &secrets[0]).unwrap(), b"same");
 }
 
 #[test]
@@ -71,10 +79,10 @@ fn an_envelope_does_not_open_for_another_envelopes_recipient() {
     let (secrets_b, publics_b) = recipients(1);
     let for_a = Envelope::encrypt_to_recipients(b"for a", &publics_a).unwrap();
     let for_b = Envelope::encrypt_to_recipients(b"for b", &publics_b).unwrap();
-    assert_eq!(for_a.decrypt(&secrets_a[0]).unwrap(), b"for a");
-    assert_eq!(for_b.decrypt(&secrets_b[0]).unwrap(), b"for b");
-    assert!(for_a.decrypt(&secrets_b[0]).is_err());
-    assert!(for_b.decrypt(&secrets_a[0]).is_err());
+    assert_eq!(open(&for_a, &secrets_a[0]).unwrap(), b"for a");
+    assert_eq!(open(&for_b, &secrets_b[0]).unwrap(), b"for b");
+    assert!(open(&for_a, &secrets_b[0]).is_err());
+    assert!(open(&for_b, &secrets_a[0]).is_err());
 }
 
 #[test]
@@ -91,7 +99,7 @@ fn a_recipient_loaded_from_a_key_file_can_decrypt() {
     let recipient = load_public_key(&dir.path().join("id.pub.pem")).unwrap();
     let envelope = Envelope::encrypt_to_recipients(b"through files", &[recipient]).unwrap();
     let loaded = load_secret_key(&dir.path().join("id.pem")).unwrap();
-    assert_eq!(envelope.decrypt(&loaded).unwrap(), b"through files");
+    assert_eq!(open(&envelope, &loaded).unwrap(), b"through files");
 }
 
 #[test]
@@ -99,17 +107,17 @@ fn a_key_listed_twice_still_works() {
     let (secrets, publics) = recipients(2);
     let listed = [publics[0], publics[1], publics[0], publics[1], publics[0]];
     let envelope = Envelope::encrypt_to_recipients(b"once each", &listed).unwrap();
-    assert_eq!(envelope.decrypt(&secrets[0]).unwrap(), b"once each");
-    assert_eq!(envelope.decrypt(&secrets[1]).unwrap(), b"once each");
+    assert_eq!(open(&envelope, &secrets[0]).unwrap(), b"once each");
+    assert_eq!(open(&envelope, &secrets[1]).unwrap(), b"once each");
 }
 
 #[test]
 fn exactly_the_maximum_number_of_recipients_is_allowed() {
     let (secrets, publics) = recipients(MAX_RECIPIENTS);
     let envelope = Envelope::encrypt_to_recipients(b"full", &publics).unwrap();
-    assert_eq!(envelope.decrypt(&secrets[0]).unwrap(), b"full");
+    assert_eq!(open(&envelope, &secrets[0]).unwrap(), b"full");
     assert_eq!(
-        envelope.decrypt(&secrets[MAX_RECIPIENTS - 1]).unwrap(),
+        open(&envelope, &secrets[MAX_RECIPIENTS - 1]).unwrap(),
         b"full"
     );
 }
@@ -131,9 +139,9 @@ fn duplicates_do_not_count_toward_the_limit() {
     listed.extend_from_slice(&publics);
     listed.push(publics[0]);
     let envelope = Envelope::encrypt_to_recipients(b"deduplicated", &listed).unwrap();
-    assert_eq!(envelope.decrypt(&secrets[10]).unwrap(), b"deduplicated");
+    assert_eq!(open(&envelope, &secrets[10]).unwrap(), b"deduplicated");
 
     let one = vec![publics[0]; MAX_RECIPIENTS * 3];
     let envelope = Envelope::encrypt_to_recipients(b"same key", &one).unwrap();
-    assert_eq!(envelope.decrypt(&secrets[0]).unwrap(), b"same key");
+    assert_eq!(open(&envelope, &secrets[0]).unwrap(), b"same key");
 }

@@ -21,6 +21,7 @@ enum Message {
         nonce: [u8; 32],
         signature: Signature,
     },
+    Keys(Vec<VerifyingKey>),
 }
 
 fn signed_message() -> Message {
@@ -221,4 +222,13 @@ fn a_message_just_under_the_limit_is_accepted() {
     let bytes = encode(&message);
     assert!(bytes.len() <= MAX_MESSAGE_LEN);
     assert_eq!(decode(&bytes).unwrap(), message);
+}
+
+#[test]
+fn a_message_carrying_many_keys_fits_the_read_buffer() {
+    let keys: Vec<VerifyingKey> = (0..64)
+        .map(|_| generate_keypair().verifying_key())
+        .collect();
+    let message = Message::Keys(keys);
+    assert_eq!(decode(&encode(&message)).unwrap(), message);
 }

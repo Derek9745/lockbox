@@ -10,6 +10,7 @@ pub const SIGNING_BYTES_LEN: usize = 1 + FILE_ID_LEN + CHALLENGE_NONCE_LEN + 8;
 pub enum Purpose {
     Fetch,
     Delete,
+    Upload,
 }
 
 impl Purpose {
@@ -17,6 +18,7 @@ impl Purpose {
         match self {
             Purpose::Fetch => 1,
             Purpose::Delete => 2,
+            Purpose::Upload => 3,
         }
     }
 }

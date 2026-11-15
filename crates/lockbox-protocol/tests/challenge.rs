@@ -77,6 +77,7 @@ fn the_signing_bytes_have_a_fixed_layout() {
     assert_eq!(&bytes[17..49], fetch.nonce());
     assert_eq!(&bytes[49..], [1, 2, 3, 4, 5, 6, 7, 8]);
     assert_eq!(delete.signing_bytes()[0], 2);
+    assert_eq!(Challenge::new(id, Purpose::Upload, 0).signing_bytes()[0], 3);
 }
 
 #[test]
@@ -90,8 +91,34 @@ fn on_the_wire_a_challenge_is_a_fixed_size() {
 #[test]
 fn an_unknown_purpose_is_rejected() {
     let mut bytes = encode(&Challenge::new(FileId::random(), Purpose::Fetch, 5));
-    bytes[PURPOSE_AT..NONCE_AT].copy_from_slice(&2u32.to_be_bytes());
+    bytes[PURPOSE_AT..NONCE_AT].copy_from_slice(&3u32.to_be_bytes());
     assert!(matches!(decode(&bytes), Err(ProtocolError::Decode(_))));
+}
+
+#[test]
+fn every_purpose_round_trips() {
+    for purpose in [Purpose::Fetch, Purpose::Delete, Purpose::Upload] {
+        let challenge = Challenge::new(FileId::random(), purpose, 5);
+        assert_eq!(decode(&encode(&challenge)).unwrap(), challenge);
+    }
+}
+
+#[test]
+fn a_signature_for_one_purpose_does_not_verify_as_another() {
+    let key = generate_keypair();
+    let purposes = [Purpose::Fetch, Purpose::Delete, Purpose::Upload];
+    for (signed_index, signed_purpose) in purposes.into_iter().enumerate() {
+        let challenge = Challenge::new(FileId::random(), signed_purpose, 5);
+        let signature = sign(&challenge.signing_bytes(), &key);
+        let wire = encode(&challenge);
+        for (other_index, _) in purposes.into_iter().enumerate() {
+            let mut bytes = wire.clone();
+            bytes[PURPOSE_AT..NONCE_AT].copy_from_slice(&(other_index as u32).to_be_bytes());
+            let other = decode(&bytes).unwrap();
+            let verified = verify(&other.signing_bytes(), &signature, &key.verifying_key()).is_ok();
+            assert_eq!(verified, other_index == signed_index);
+        }
+    }
 }
 
 #[test]

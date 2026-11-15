@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::challenge::{CHALLENGE_NONCE_LEN, Challenge};
+use crate::challenge::{CHALLENGE_NONCE_LEN, Challenge, Purpose};
 use crate::chunk::Chunk;
 use crate::crypto::envelope::{EnvelopeHeader, MIN_CIPHERTEXT_LEN};
-use crate::crypto::{Signature, VerifyingKey};
+use crate::crypto::sign::{sign, verify};
+use crate::crypto::{Signature, SigningKey, VerifyingKey};
 use crate::error::{ProtocolError, Result};
 use crate::file_id::FileId;
 
@@ -38,6 +39,35 @@ pub struct SignedRequest {
     pub nonce: [u8; CHALLENGE_NONCE_LEN],
     pub public_key: VerifyingKey,
     pub signature: Signature,
+}
+
+impl SignedRequest {
+    pub fn answer(challenge: &Challenge, key: &SigningKey) -> Self {
+        Self {
+            file_id: challenge.file_id(),
+            nonce: *challenge.nonce(),
+            public_key: key.verifying_key(),
+            signature: sign(&challenge.signing_bytes(), key),
+        }
+    }
+
+    pub fn check(&self, challenge: &Challenge, purpose: Purpose, now: u64) -> Result<()> {
+        if self.file_id != challenge.file_id()
+            || self.nonce != *challenge.nonce()
+            || purpose != challenge.purpose()
+        {
+            return Err(ProtocolError::ChallengeMismatch);
+        }
+        if !challenge.is_live_at(now) {
+            return Err(ProtocolError::ChallengeExpired);
+        }
+        verify(
+            &challenge.signing_bytes(),
+            &self.signature,
+            &self.public_key,
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]

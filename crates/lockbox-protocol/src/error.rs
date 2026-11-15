@@ -27,8 +27,14 @@ pub enum ProtocolError {
     #[error("ciphertext length {len} is outside {min}..={max}")]
     CiphertextLenOutOfRange { len: u64, min: u64, max: u64 },
 
-    #[error("invalid envelope: {0}")]
+    #[error("cryptographic check failed: {0}")]
     Crypto(#[from] crate::crypto::CryptoError),
+
+    #[error("the answer does not match the challenge")]
+    ChallengeMismatch,
+
+    #[error("the challenge has expired")]
+    ChallengeExpired,
 }
 
 pub type Result<T> = std::result::Result<T, ProtocolError>;

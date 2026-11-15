@@ -23,6 +23,12 @@ pub enum ProtocolError {
 
     #[error("chunk of {len} bytes exceeds the limit of {max}")]
     ChunkTooLarge { len: usize, max: usize },
+
+    #[error("ciphertext length {len} is outside {min}..={max}")]
+    CiphertextLenOutOfRange { len: u64, min: u64, max: u64 },
+
+    #[error("invalid envelope: {0}")]
+    Crypto(#[from] crate::crypto::CryptoError),
 }
 
 pub type Result<T> = std::result::Result<T, ProtocolError>;

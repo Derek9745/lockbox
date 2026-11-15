@@ -11,7 +11,7 @@ pub const MAX_MESSAGE_LEN: usize = 1024 * 1024;
 const SCRATCH_LEN: usize = 256;
 
 pub fn write_message<T: Serialize>(writer: &mut impl Write, message: &T) -> Result<()> {
-    let bytes = postcard::to_stdvec(message)?;
+    let bytes = postcard::to_stdvec(message).map_err(ProtocolError::Encode)?;
     if bytes.len() > MAX_MESSAGE_LEN {
         return Err(ProtocolError::MessageTooLarge {
             len: bytes.len(),

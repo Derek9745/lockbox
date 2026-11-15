@@ -4,7 +4,7 @@ pub enum ProtocolError {
     Io(#[from] std::io::Error),
 
     #[error("could not encode message: {0}")]
-    Encode(#[from] postcard::Error),
+    Encode(postcard::Error),
 
     #[error("could not decode message: {0}")]
     Decode(postcard::Error),

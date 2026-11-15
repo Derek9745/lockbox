@@ -20,6 +20,9 @@ pub enum ProtocolError {
 
     #[error("invalid file id")]
     InvalidFileId,
+
+    #[error("chunk of {len} bytes exceeds the limit of {max}")]
+    ChunkTooLarge { len: usize, max: usize },
 }
 
 pub type Result<T> = std::result::Result<T, ProtocolError>;
